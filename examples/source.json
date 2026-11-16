@@ -1,0 +1,15 @@
+{
+  "database": "legacy_sql",
+  "tables": {
+    "dbo.Orders": {
+      "columns": {
+        "id": "int",
+        "amount": "decimal(12,2)"
+      },
+      "row_count": 3,
+      "aggregates": {
+        "total_amount": "125.00"
+      }
+    }
+  }
+}
