@@ -76,6 +76,7 @@ def test_scope_mismatch_rejected():
     source = evidence([row(1, "10.00")])
     target = copy.deepcopy(source)
     target["compare_columns"] = ["Amount"]
+    target["rows"][0].pop("Status")
     with pytest.raises(RowEvidenceError, match="scope"):
         reconcile_rows(source, target)
 
