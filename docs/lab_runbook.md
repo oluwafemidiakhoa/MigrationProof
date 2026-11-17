@@ -16,16 +16,16 @@
 
 Open `docs/lab_source_target_demo.sql` in SSMS and review it. Execute only on an approved nonproduction instance.
 
-## Collect on Windows (Command Prompt, active .venv)
+Before collecting, use an independently reviewed `approved_lab_columns.json` matching the complete `dbo.Orders` column list. The list cannot be inferred from the same restricted collector; inspect and confirm it separately using an authorized inventory account.\n\n## Collect on Windows (Command Prompt, active .venv)
 
 Use your approved SQL Server hostname in place of LAB_SERVER. Use an appropriate trusted certificate and Driver 18 for a production-like test. Certificate validation must remain enabled.
 
 ```bat
 set "MIGRATIONPROOF_CONNECTION_STRING=DRIVER={ODBC Driver 18 for SQL Server};SERVER=LAB_SERVER;DATABASE=MigrationProofSourceLab;Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=no;"
-python -m migrationproof.sqlserver_cli --output source_lab.json --expected-database MigrationProofSourceLab --table dbo.Orders --max-tables 2 --max-rows-per-table 1000 --sum-column Amount
+python -m migrationproof.sqlserver_cli --output source_lab.json --expected-database MigrationProofSourceLab --table dbo.Orders --expected-columns approved_lab_columns.json --max-tables 2 --max-rows-per-table 1000 --sum-column Amount
 
 set "MIGRATIONPROOF_CONNECTION_STRING=DRIVER={ODBC Driver 18 for SQL Server};SERVER=LAB_SERVER;DATABASE=MigrationProofTargetLab;Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=no;"
-python -m migrationproof.sqlserver_cli --output target_lab.json --expected-database MigrationProofTargetLab --table dbo.Orders --max-tables 2 --max-rows-per-table 1000 --sum-column Amount
+python -m migrationproof.sqlserver_cli --output target_lab.json --expected-database MigrationProofTargetLab --table dbo.Orders --expected-columns approved_lab_columns.json --max-tables 2 --max-rows-per-table 1000 --sum-column Amount
 
 python -m migrationproof.cli source_lab.json target_lab.json --output lab_report.json
 python -m migrationproof.report_cli lab_report.json --output lab_report.html
