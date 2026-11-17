@@ -70,10 +70,12 @@ def collect_snapshot(
     max_tables: int = 10,
     max_rows_per_table: int = 10000,
     sum_columns: tuple[str, ...] = (),
+    expected_columns: dict[str, tuple[str, ...]] | None = None,
 ) -> DatabaseSnapshot:
     """Collect bounded exact counts and opt-in sums only for named tables.
 
-    Failure to verify scope or enforce a row limit aborts the entire collection.
+    Failure to verify scope, the independently supplied column inventory, or
+    enforce a row limit aborts the entire collection.
     Do not use on production. Source/target point-in-time consistency is unproven.
     """
     if not 1 <= timeout <= 60 or not 1 <= max_tables <= 100 or not 1 <= max_rows_per_table <= 100000:
@@ -87,6 +89,13 @@ def collect_snapshot(
     requested_names = set(tables_allowlist)
     if any(name.count(".") != 1 or not all(name.split(".")) for name in requested_names):
         raise ValueError("Table names must be exact schema.table names")
+    if expected_columns is None or set(expected_columns) != requested_names:
+        raise ValueError("Independent expected-column inventory required for every allowed table")
+    for table_name, expected in expected_columns.items():
+        if not isinstance(expected, (tuple, list)) or not expected or any(
+            not isinstance(name, str) or not name for name in expected
+        ) or len(expected) != len(set(expected)):
+            raise ValueError("Invalid independent expected-column inventory")
     validate_connection_security(connection_string)
     try:
         import pyodbc
@@ -114,6 +123,10 @@ def collect_snapshot(
         observed_names = {f"{schema}.{table}" for schema, table in metadata}
         if observed_names != requested_names:
             raise ValueError("One or more expected tables are not visible; collection incomplete")
+        for (schema, table), columns in metadata.items():
+            full_name = f"{schema}.{table}"
+            if set(columns) != set(expected_columns[full_name]):
+                raise ValueError("Column inventory mismatch; collection incomplete")
         tables: dict[str, TableSnapshot] = {}
         for (schema, table), columns in sorted(metadata.items()):
             selected = select_sum_columns(columns, sum_columns)
