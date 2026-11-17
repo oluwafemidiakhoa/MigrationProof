@@ -7,8 +7,8 @@
 - Use only an explicitly approved nonproduction SQL Server environment and two NEW disposable databases.
 - The SQL setup script creates databases and inserts/updates **synthetic test data**. Review and execute manually in SSMS only after confirming server ownership, capacity, and change requirements.
 - Never run the setup script on a business production instance.
-- The Python collector only reads; it issues COUNT_BIG and SUM, which can be costly on large tables.
-- Use a dedicated read-only principal for customer pilots. The DBA account and TrustServerCertificate=yes are diagnostic-only, not production controls.
+- The Python collector only reads; it requires explicitly allowed tables, a bounded TOP-based count, and an optional SUM (which may still consume resources).
+- Use a dedicated read-only principal for customer pilots. Use a dedicated read-only identity and verified TLS; certificate bypass is not accepted.
 - Source and target snapshots are collected independently; do not copy one JSON file to the other.
 - Don't commit snapshots containing customer metadata.
 
@@ -18,14 +18,14 @@ Open `docs/lab_source_target_demo.sql` in SSMS and review it. Execute only on an
 
 ## Collect on Windows (Command Prompt, active .venv)
 
-Use your approved SQL Server hostname in place of LAB_SERVER. Use an appropriate trusted certificate and Driver 18 for a production-like test. A certificate bypass should only be used for a separately approved isolated lab.
+Use your approved SQL Server hostname in place of LAB_SERVER. Use an appropriate trusted certificate and Driver 18 for a production-like test. Certificate validation must remain enabled.
 
 ```bat
-set "MIGRATIONPROOF_CONNECTION_STRING=DRIVER={ODBC Driver 18 for SQL Server};SERVER=LAB_SERVER;DATABASE=MigrationProofSourceLab;Trusted_Connection=yes;Encrypt=yes;"
-python -m migrationproof.sqlserver_cli --output source_lab.json --max-tables 2 --sum-column Amount
+set "MIGRATIONPROOF_CONNECTION_STRING=DRIVER={ODBC Driver 18 for SQL Server};SERVER=LAB_SERVER;DATABASE=MigrationProofSourceLab;Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=no;"
+python -m migrationproof.sqlserver_cli --output source_lab.json --expected-database MigrationProofSourceLab --table dbo.Orders --max-tables 2 --max-rows-per-table 1000 --sum-column Amount
 
-set "MIGRATIONPROOF_CONNECTION_STRING=DRIVER={ODBC Driver 18 for SQL Server};SERVER=LAB_SERVER;DATABASE=MigrationProofTargetLab;Trusted_Connection=yes;Encrypt=yes;"
-python -m migrationproof.sqlserver_cli --output target_lab.json --max-tables 2 --sum-column Amount
+set "MIGRATIONPROOF_CONNECTION_STRING=DRIVER={ODBC Driver 18 for SQL Server};SERVER=LAB_SERVER;DATABASE=MigrationProofTargetLab;Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=no;"
+python -m migrationproof.sqlserver_cli --output target_lab.json --expected-database MigrationProofTargetLab --table dbo.Orders --max-tables 2 --max-rows-per-table 1000 --sum-column Amount
 
 python -m migrationproof.cli source_lab.json target_lab.json --output lab_report.json
 python -m migrationproof.report_cli lab_report.json --output lab_report.html
