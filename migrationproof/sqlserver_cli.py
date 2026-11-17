@@ -12,7 +12,7 @@ def main() -> int:
     parser.add_argument("--expected-database", required=True)
     parser.add_argument("--table", action="append", required=True,
                         help="Exact schema.table name to collect; repeatable")
-    parser.add_argument("--timeout", type=int, default=15)
+    parser.add_argument("--snapshot-isolation", action="store_true",\n                        help="Opt in to per-database SNAPSHOT transaction; fails unless already enabled")\n    parser.add_argument("--timeout", type=int, default=15)
     parser.add_argument("--expected-columns", required=True, type=Path,
                         help="Independent JSON mapping schema.table to complete list of expected columns")
     parser.add_argument("--max-tables", type=int, default=10)
@@ -38,7 +38,7 @@ def main() -> int:
         max_tables=args.max_tables,
         max_rows_per_table=args.max_rows_per_table,
         sum_columns=tuple(args.sum_column),
-        expected_columns=expected_columns,
+        expected_columns=expected_columns,\n        snapshot_isolation=args.snapshot_isolation,
     )
     args.output.write_text(snapshot.model_dump_json(indent=2) + "\n", encoding="utf-8")
     print(f"Saved {len(snapshot.tables)} explicitly scoped tables to {args.output}")
