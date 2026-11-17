@@ -18,22 +18,43 @@ EXPECTED_COLUMNS = {"dbo.Orders": ("OrderID", "Amount")}
 EXPECTED_SUMS = ("150.00", "1124.00")
 
 
-def _server_from_conn(connection: str) -> str:
-    """Simple fail-closed lab-only parser; no arbitrary connection builder."""
-    values: dict[str, str] = {}
+def _validated_options(connection: str) -> dict[str, str]:
+    """Parse only a small, unambiguous integrated-auth lab ODBC subset.
+
+    We intentionally do not accept arbitrary ODBC syntax, alternate server or
+    catalog aliases, credentials, or driver options in this isolated lab gate.
+    """
+    if not isinstance(connection, str) or len(connection) > 4096 or "\\x00" in connection:
+        raise ValueError("Invalid lab connection configuration")
+    allowed = {
+        "driver", "server", "database", "trusted_connection",
+        "encrypt", "trustservercertificate",
+    }
+    options: dict[str, str] = {}
     for element in connection.split(";"):
         if not element.strip():
             continue
         if "=" not in element:
-            raise ValueError("Invalid lab connection string")
+            raise ValueError("Malformed lab connection option")
         key, value = element.split("=", 1)
         key = key.strip().lower()
-        if key in values:
-            raise ValueError("Duplicate connection option")
-        values[key] = value.strip()
-    if "server" not in values or "address" in values or "addr" in values or "networkaddress" in values:
-        raise ValueError("A single explicit SERVER field is required")
-    return values["server"]
+        value = value.strip()
+        if key not in allowed or key in options or not value:
+            raise ValueError("Unsupported or duplicate lab connection option")
+        options[key] = value
+    if set(options) != allowed:
+        raise ValueError("Exact six-option lab connection profile is required")
+    if options["driver"].casefold() != "{odbc driver 18 for sql server}":
+        raise ValueError("Lab requires ODBC Driver 18")
+    if options["trusted_connection"].casefold() != "yes":
+        raise ValueError("Lab requires an integrated read-only identity")
+    if options["encrypt"].casefold() != "yes":
+        raise ValueError("Lab requires encrypted transport")
+    if options["trustservercertificate"].casefold() != "no":
+        raise ValueError("Lab requires certificate verification")
+    if any(any(char in options[name] for char in "{}\\r\\n") for name in ("server", "database")):
+        raise ValueError("Invalid lab server or database identity")
+    return options
 
 
 def validate_gate_configuration(
@@ -42,25 +63,20 @@ def validate_gate_configuration(
     source: str | None,
     target: str | None,
 ) -> None:
-    """Validate exact lab intent BEFORE any database connection is attempted."""
+    """Reject unsafe or ambiguous targets before creating SQL connections."""
     if approval != APPROVAL:
         raise ValueError("No explicit disposable lab approval")
-    if not approved_server or not isinstance(approved_server, str):
-        raise ValueError("Approved lab server is missing")
-    if approved_server.strip() != approved_server or not approved_server:
+    if (not isinstance(approved_server, str) or not approved_server
+            or approved_server.strip() != approved_server):
         raise ValueError("Invalid approved lab server")
     if not source or not target:
         raise ValueError("Both lab connection strings are required")
-    for conn, db in zip((source, target), DATABASES):
-        if _server_from_conn(conn) != approved_server:
+    for conn, database in zip((source, target), DATABASES):
+        options = _validated_options(conn)
+        if options["server"] != approved_server:
             raise ValueError("Connection server does not match approved lab server")
-        options = {k.strip().lower(): v.strip() for k, v in
-                   (item.split("=", 1) for item in conn.split(";") if item.strip())}
-        if options.get("database") != db:
+        if options["database"] != database:
             raise ValueError("Lab database identity mismatch")
-        # Do not allow server/login aliases to override fixed lab identity.
-        if any(key in options for key in ("initial catalog", "initialcatalog", "uid", "pwd", "user id")):
-            raise ValueError("Ambiguous or unsupported lab connection options")
 
 
 def run_lab_gate(source_conn: str, target_conn: str, *, approved_server: str,
