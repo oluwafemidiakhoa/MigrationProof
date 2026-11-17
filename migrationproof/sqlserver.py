@@ -131,19 +131,33 @@ def collect_snapshot(
         for (schema, table), columns in sorted(metadata.items()):
             selected = select_sum_columns(columns, sum_columns)
             qualified = f"{quote_identifier(schema)}.{quote_identifier(table)}"
-            # TOP N+1 guarantees we never intentionally count the entire large table.
+            # Count and all optional sums are computed from ONE bounded input.
+            # If TOP(N+1) sees the overflow row, no aggregate result is trusted.
+            # This avoids a separate, potentially unbounded SUM scan.
             bound = max_rows_per_table + 1
-            cur.execute(
-                f"SELECT COUNT_BIG(*) FROM (SELECT TOP ({bound}) 1 AS marker FROM {qualified}) AS bounded"
+            projected = ", ".join(quote_identifier(name) for name in selected)
+            if not projected:
+                projected = "1 AS [_marker]"
+            expressions = ["COUNT_BIG(*)"] + [
+                f"SUM({quote_identifier(name)})" for name in selected
+            ]
+            query = (
+                f"SELECT {', '.join(expressions)} FROM "
+                f"(SELECT TOP ({bound}) {projected} FROM {qualified}) AS bounded"
             )
-            count = int(cur.fetchone()[0])
+            cur.execute(query)
+            result = cur.fetchone()
+            if result is None:
+                raise ValueError("Aggregate query returned no result; collection incomplete")
+            count = int(result[0])
             if count > max_rows_per_table:
                 raise ValueError("Row budget exceeded; collection incomplete")
             aggregates = {}
-            for column in selected:
-                cur.execute(f"SELECT SUM({quote_identifier(column)}) FROM {qualified}")
-                value = cur.fetchone()[0]
-                aggregates[f"sum:{column}"] = str(value) if isinstance(value, Decimal) else value
+            for index, column in enumerate(selected, start=1):
+                value = result[index]
+                aggregates[f"sum:{column}"] = (
+                    str(value) if isinstance(value, Decimal) else value
+                )
             tables[f"{schema}.{table}"] = TableSnapshot(
                 columns=columns, row_count=count, aggregates=aggregates
             )
