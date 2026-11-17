@@ -9,7 +9,7 @@
 - **Never** use a production/company SQL Server, real customer rows, or shared integration host without explicit administrator approval and cost/risk review
 - Lab database creation is a separate, manual action in `docs/lab_source_target_demo.sql`; script refuses to create if either database already exists
 - No database creation, modification or cleanup is performed by this Python gate
-- Encrypted ODBC Driver 18 connections with certificate validation: `Encrypt=yes;TrustServerCertificate=no`
+- Exact six-option ODBC connection profile: `DRIVER={ODBC Driver 18 for SQL Server};SERVER=<approved host>;DATABASE=<approved lab database>;Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=no`. Any other, duplicated, omitted, or conflicting option fails closed before connecting. Validating these strings is not a substitute for verifying the actual certificate chain and server identity on a real lab host.
 - A narrowly scoped read-only database principal; operating-system environment variables hold credentials/connection details and are not committed
 - Collector bounds: one table, at most 10 rows, 10-second query timeout
 - **No automatic GitHub Actions live SQL job** or hidden connection fallback
