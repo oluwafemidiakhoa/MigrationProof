@@ -6,19 +6,19 @@ This collector is **not approved for production or unrestricted customer databas
 
 - Use an approved disposable non-production SQL Server database and separately created read-only login.
 - Require verified TLS: ODBC Driver 18 with `Encrypt=yes;TrustServerCertificate=no`. Never weaken validation to make a connection succeed.
-- Supply `--expected-database` and one or more `--table schema.table` values. Missing/hidden tables are errors, not success.
+- Supply `--expected-database`, one or more `--table schema.table` values and an independently reviewed `--expected-columns` JSON inventory. Missing/hidden/extra columns in an allowed table are errors, not success. Inventory must NOT be generated using the same low-permission collector.
 - Set a conservative `--max-rows-per-table` (default 10000) and `--timeout` (default 15 seconds). Table counts are bounded by an N+1 TOP subquery; opt-in SUM applies only after counts pass.
 - Treat result as **scope-limited**, not a guarantee that there are no invisible tables or rows excluded by row-level security.
 - `SUM` can be expensive even on allowed tables, may overflow, and is inappropriate as sole evidence of row equivalence.
 - Report completeness must be independently reviewed. Snapshot collection timestamps, isolation levels, source/target coherence, and signed evidence are future gates.
 - Never commit captured database metadata or customer evidence to the repository.
 
-## Windows Command Prompt example
+## Approved column inventory\n\nThe operator creates a separate, manually reviewed `approved_lab_columns.json` by an authorized higher-visibility inventory process. Example only, adjust to actual lab schema:\n\n```json\n{\n  "dbo.Orders": ["OrderID", "Amount"]\n}\n```\n\nThis validates visible column names against supplied expectations; it does **not** establish that the inventory itself is exhaustive, that row-level security is absent, or that source/target snapshots were transactionally consistent.\n\n## Windows Command Prompt example
 
 ```bat
 python -m pip install pyodbc
 set "MIGRATIONPROOF_CONNECTION_STRING=DRIVER={ODBC Driver 18 for SQL Server};SERVER=LAB_SERVER;DATABASE=MigrationProofSourceLab;Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=no;"
-python -m migrationproof.sqlserver_cli --output source_lab.json --expected-database MigrationProofSourceLab --table dbo.Orders --max-rows-per-table 1000 --sum-column Amount
+python -m migrationproof.sqlserver_cli --output source_lab.json --expected-database MigrationProofSourceLab --table dbo.Orders --expected-columns approved_lab_columns.json --max-rows-per-table 1000 --sum-column Amount
 ```
 
 Repeat with an independently collected target snapshot and its own explicit expected database. Then compare:
