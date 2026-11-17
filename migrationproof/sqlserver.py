@@ -1,22 +1,56 @@
-"""Optional read-only SQL Server metadata and explicitly requested aggregate collector."""
+"""Bounded, read-only SQL Server snapshot collector for authorized test databases.
+
+This collector proves checks only over explicitly named tables. It does not prove
+whole-database equivalence or a transactionally consistent point-in-time view.
+"""
 from __future__ import annotations
+
 from contextlib import closing
 from decimal import Decimal
+import re
+
 from .core import DatabaseSnapshot, TableSnapshot
 
 NUMERIC_TYPES = frozenset({
     "tinyint", "smallint", "int", "bigint", "decimal", "numeric",
-    "money", "smallmoney", "float", "real"
+    "money", "smallmoney", "float", "real",
 })
+SYSTEM_DATABASES = frozenset({"master", "model", "msdb", "tempdb"})
+
 
 def quote_identifier(value: str) -> str:
     if not value or "\x00" in value:
         raise ValueError("Invalid identifier")
     return "[" + value.replace("]", "]]") + "]"
 
+
+def validate_connection_security(connection_string: str) -> None:
+    """Conservative defense-in-depth check; ODBC driver still enforces TLS."""
+    # Refuse ambiguous duplicate security keys rather than let driver precedence vary.
+    parts = [part.strip() for part in connection_string.split(";") if part.strip()]
+    options: dict[str, str] = {}
+    for part in parts:
+        if "=" not in part:
+            raise ValueError("Malformed ODBC connection string")
+        key, value = part.split("=", 1)
+        key = re.sub(r"\s+", "", key).lower()
+        if key in options:
+            raise ValueError("Duplicate connection-string option")
+        options[key] = value.strip().lower()
+    if options.get("encrypt") not in {"yes", "true", "mandatory", "strict"}:
+        raise ValueError("Encrypted SQL connection is required")
+    if options.get("trustservercertificate") not in {"no", "false"}:
+        raise ValueError("TrustServerCertificate=no is required")
+    if "database" not in options and "initialcatalog" not in options:
+        raise ValueError("Explicit database required")
+    if any(key in options for key in ("uid", "user", "user id", "pwd", "password")):
+        # Password-bearing strings may be valid, but avoid parsing/reprinting them.
+        # Never include the connection string in an exception.
+        raise ValueError("Use a scoped integrated or externally managed identity")
+
+
 def select_sum_columns(columns: dict[str, str], requested: tuple[str, ...]) -> tuple[str, ...]:
-    """Reject unknown/non-numeric columns rather than silently skipping checks."""
-    selected = []
+    selected: list[str] = []
     for name in requested:
         if name not in columns:
             raise ValueError(f"Requested aggregate column not found: {name}")
@@ -27,17 +61,33 @@ def select_sum_columns(columns: dict[str, str], requested: tuple[str, ...]) -> t
             selected.append(name)
     return tuple(selected)
 
+
 def collect_snapshot(
-    connection_string: str, *, timeout: int = 15, max_tables: int = 100,
+    connection_string: str, *,
+    expected_database: str,
+    tables_allowlist: tuple[str, ...],
+    timeout: int = 15,
+    max_tables: int = 10,
+    max_rows_per_table: int = 10000,
     sum_columns: tuple[str, ...] = (),
 ) -> DatabaseSnapshot:
-    """Read metadata, exact row counts, and opt-in sums from approved lab databases.
+    """Collect bounded exact counts and opt-in sums only for named tables.
 
-    All requested aggregate columns must exist and be numeric in every selected
-    table. Errors abort collection rather than producing an incomplete success.
+    Failure to verify scope or enforce a row limit aborts the entire collection.
+    Do not use on production. Source/target point-in-time consistency is unproven.
     """
-    if not 1 <= timeout <= 300 or not 1 <= max_tables <= 1000:
-        raise ValueError("Invalid limits")
+    if not 1 <= timeout <= 60 or not 1 <= max_tables <= 100 or not 1 <= max_rows_per_table <= 100000:
+        raise ValueError("Collection limits outside approved bounds")
+    if not expected_database or expected_database.lower() in SYSTEM_DATABASES:
+        raise ValueError("An approved non-system database name is required")
+    if not tables_allowlist or len(set(tables_allowlist)) != len(tables_allowlist):
+        raise ValueError("A nonempty, duplicate-free table allowlist is required")
+    if len(tables_allowlist) > max_tables:
+        raise ValueError("Table allowlist exceeds max_tables")
+    requested_names = set(tables_allowlist)
+    if any(name.count(".") != 1 or not all(name.split(".")) for name in requested_names):
+        raise ValueError("Table names must be exact schema.table names")
+    validate_connection_security(connection_string)
     try:
         import pyodbc
     except ImportError as exc:
@@ -46,30 +96,42 @@ def collect_snapshot(
         conn.timeout = timeout
         cur = conn.cursor()
         cur.execute("SELECT DB_NAME()")
-        database = str(cur.fetchone()[0])
+        observed_db = str(cur.fetchone()[0])
+        if observed_db != expected_database:
+            raise ValueError("Connected database does not match approved expected_database")
         cur.execute("""SELECT s.name, t.name, c.name, ty.name, c.max_length, c.precision, c.scale, c.is_nullable
             FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id
             JOIN sys.columns c ON c.object_id=t.object_id
             JOIN sys.types ty ON ty.user_type_id=c.user_type_id
             WHERE t.is_ms_shipped=0 ORDER BY s.name,t.name,c.column_id""")
-        metadata = {}
+        metadata: dict[tuple[str, str], dict[str, str]] = {}
         for schema, table, column, typ, length, precision, scale, nullable in cur:
-            metadata.setdefault((schema, table), {})[column] = f"{typ}({length},{precision},{scale}) NULL={bool(nullable)}"
-        if len(metadata) > max_tables:
-            raise ValueError("Table limit exceeded")
-        tables = {}
-        for (schema, table), columns in metadata.items():
+            full_name = f"{schema}.{table}"
+            if full_name in requested_names:
+                metadata.setdefault((schema, table), {})[column] = (
+                    f"{typ}({length},{precision},{scale}) NULL={bool(nullable)}"
+                )
+        observed_names = {f"{schema}.{table}" for schema, table in metadata}
+        if observed_names != requested_names:
+            raise ValueError("One or more expected tables are not visible; collection incomplete")
+        tables: dict[str, TableSnapshot] = {}
+        for (schema, table), columns in sorted(metadata.items()):
             selected = select_sum_columns(columns, sum_columns)
-            table_name = f"{quote_identifier(schema)}.{quote_identifier(table)}"
-            cur.execute(f"SELECT COUNT_BIG(*) FROM {table_name}")
-            row_count = int(cur.fetchone()[0])
+            qualified = f"{quote_identifier(schema)}.{quote_identifier(table)}"
+            # TOP N+1 guarantees we never intentionally count the entire large table.
+            bound = max_rows_per_table + 1
+            cur.execute(
+                f"SELECT COUNT_BIG(*) FROM (SELECT TOP ({bound}) 1 AS marker FROM {qualified}) AS bounded"
+            )
+            count = int(cur.fetchone()[0])
+            if count > max_rows_per_table:
+                raise ValueError("Row budget exceeded; collection incomplete")
             aggregates = {}
             for column in selected:
-                cur.execute(f"SELECT SUM({quote_identifier(column)}) FROM {table_name}")
+                cur.execute(f"SELECT SUM({quote_identifier(column)}) FROM {qualified}")
                 value = cur.fetchone()[0]
-                # Decimal is serialized as a string to avoid floating-point rounding.
                 aggregates[f"sum:{column}"] = str(value) if isinstance(value, Decimal) else value
             tables[f"{schema}.{table}"] = TableSnapshot(
-                columns=columns, row_count=row_count, aggregates=aggregates
+                columns=columns, row_count=count, aggregates=aggregates
             )
-        return DatabaseSnapshot(database=database, tables=tables)
+        return DatabaseSnapshot(database=observed_db, tables=tables)
