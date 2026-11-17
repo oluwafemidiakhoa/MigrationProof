@@ -77,7 +77,9 @@ def finalize_manifest(root: Path) -> dict[str, Any]:
 def verify_proof(root: Path, manifest: dict[str, Any]) -> dict[str, Any]:
     """Rehash all files and reproduce report. Returns report or raises ProofError."""
     root = Path(root).resolve(strict=True)
-    if (not isinstance(manifest, dict) or not isinstance(manifest.get("files"), list)\n            or any(not isinstance(entry, dict) for entry in manifest["files"])\n            or [entry.get("path") for entry in manifest["files"]] != list(EXPECTED_FILES)):
+    if (not isinstance(manifest, dict) or not isinstance(manifest.get("files"), list)
+            or any(not isinstance(entry, dict) for entry in manifest["files"])
+            or [entry.get("path") for entry in manifest["files"]] != list(EXPECTED_FILES)):
         raise ProofError("Manifest must cover exactly all required evidence")
     try:
         verify_manifest(root, manifest)
