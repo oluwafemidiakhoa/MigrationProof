@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "migrationproof"
+version = "0.1.0"
+description = "Offline evidence-first SQL migration reconciliation"
+requires-python = ">=3.11"
+dependencies = ["pydantic>=2.8,<3"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[tool.setuptools.packages.find]
+include = ["migrationproof*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

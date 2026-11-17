@@ -1,0 +1,15 @@
+{
+  "database": "azure_sql",
+  "tables": {
+    "dbo.Orders": {
+      "columns": {
+        "id": "int",
+        "amount": "decimal(12,2)"
+      },
+      "row_count": 2,
+      "aggregates": {
+        "total_amount": "120.00"
+      }
+    }
+  }
+}
