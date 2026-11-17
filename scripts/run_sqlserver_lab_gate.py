@@ -52,7 +52,7 @@ def _validated_options(connection: str) -> dict[str, str]:
         raise ValueError("Lab requires encrypted transport")
     if options["trustservercertificate"].casefold() != "no":
         raise ValueError("Lab requires certificate verification")
-    if any(any(char in options[name] for char in "{}\\r\\n") for name in ("server", "database")):
+    if any(any(char in options[name] for char in ("{", "}", chr(13), chr(10))) for name in ("server", "database")):
         raise ValueError("Invalid lab server or database identity")
     return options
 
