@@ -83,3 +83,47 @@ def test_unexpected_fixture_aborts():
         run_lab_gate(connection("MigrationProofSourceLab"),
                      connection("MigrationProofTargetLab"),
                      approved_server="LAB-SQL", collector=bad_collector)
+
+
+@pytest.mark.parametrize("extra", [
+    "Encrypt=no;", "TrustServerCertificate=yes;", "SERVER=OTHER;",
+    "UID=sa;", "PWD=secret;", "Initial Catalog=master;",
+    "Address=PROD-SQL;", "ApplicationIntent=ReadOnly;",
+])
+def test_duplicate_or_unsupported_options_fail_closed(extra):
+    with pytest.raises(ValueError):
+        validate_gate_configuration(
+            APPROVAL, "LAB-SQL",
+            connection("MigrationProofSourceLab") + extra,
+            connection("MigrationProofTargetLab"),
+        )
+
+
+@pytest.mark.parametrize("original,replacement", [
+    ("Encrypt=yes", "Encrypt=no"),
+    ("TrustServerCertificate=no", "TrustServerCertificate=yes"),
+    ("Trusted_Connection=yes", "Trusted_Connection=no"),
+    ("{ODBC Driver 18 for SQL Server}", "{ODBC Driver 17 for SQL Server}"),
+])
+def test_insecure_transport_or_identity_refused(original, replacement):
+    with pytest.raises(ValueError):
+        validate_gate_configuration(
+            APPROVAL, "LAB-SQL",
+            connection("MigrationProofSourceLab").replace(original, replacement),
+            connection("MigrationProofTargetLab"),
+        )
+
+
+def test_valid_lab_configuration_passes_preflight():
+    validate_gate_configuration(
+        APPROVAL, "LAB-SQL", connection("MigrationProofSourceLab"),
+        connection("MigrationProofTargetLab"),
+    )
+
+
+def test_empty_or_malformed_lab_config_never_connects():
+    with pytest.raises(ValueError):
+        validate_gate_configuration(
+            APPROVAL, "LAB-SQL", "SERVER=LAB-SQL;DATABASE=MigrationProofSourceLab;",
+            connection("MigrationProofTargetLab"),
+        )
