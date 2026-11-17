@@ -10,7 +10,8 @@ requires-python = ">=3.11"
 dependencies = ["pydantic>=2.8,<3"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8,<10"]
+dev = ["pytest>=8,<10", "cryptography>=44,<47"]
+signatures = ["cryptography>=44,<47"]
 
 [tool.setuptools.packages.find]
 include = ["migrationproof*"]
