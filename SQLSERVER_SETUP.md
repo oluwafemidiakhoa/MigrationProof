@@ -1,24 +1,35 @@
-# MigrationProof v0.2: SQL Server test collector
+# MigrationProof SQL Server collector — experimental scoped lab use
 
-The collector is experimental. It reads catalog metadata and executes COUNT_BIG(*) on every visible user table. It does not write SQL data. COUNT_BIG can be expensive, block, or produce inconsistent cross-table results during concurrent writes.
+This collector is **not approved for production or unrestricted customer databases**. It connects only to the explicitly named database and explicitly listed tables, and it refuses any table containing more than the configured row budget. The collector does not perform DML or DDL, but reads can still consume resources or take locks. It does **not** prove a transactionally consistent snapshot or complete migration equivalence.
 
-Use **only an approved disposable test database**. Do not use master or organizational business databases.
+## Required checks
 
-## Windows Command Prompt
+- Use an approved disposable non-production SQL Server database and separately created read-only login.
+- Require verified TLS: ODBC Driver 18 with `Encrypt=yes;TrustServerCertificate=no`. Never weaken validation to make a connection succeed.
+- Supply `--expected-database` and one or more `--table schema.table` values. Missing/hidden tables are errors, not success.
+- Set a conservative `--max-rows-per-table` (default 10000) and `--timeout` (default 15 seconds). Table counts are bounded by an N+1 TOP subquery; opt-in SUM applies only after counts pass.
+- Treat result as **scope-limited**, not a guarantee that there are no invisible tables or rows excluded by row-level security.
+- `SUM` can be expensive even on allowed tables, may overflow, and is inappropriate as sole evidence of row equivalence.
+- Report completeness must be independently reviewed. Snapshot collection timestamps, isolation levels, source/target coherence, and signed evidence are future gates.
+- Never commit captured database metadata or customer evidence to the repository.
+
+## Windows Command Prompt example
 
 ```bat
 python -m pip install pyodbc
-set "MIGRATIONPROOF_CONNECTION_STRING=DRIVER={ODBC Driver 18 for SQL Server};SERVER=FXL-WSV-SQL;DATABASE=MigrationProofTest;Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=yes;"
-python -m migrationproof.sqlserver_cli --output test_snapshot.json --max-tables 10
+set "MIGRATIONPROOF_CONNECTION_STRING=DRIVER={ODBC Driver 18 for SQL Server};SERVER=LAB_SERVER;DATABASE=MigrationProofSourceLab;Trusted_Connection=yes;Encrypt=yes;TrustServerCertificate=no;"
+python -m migrationproof.sqlserver_cli --output source_lab.json --expected-database MigrationProofSourceLab --table dbo.Orders --max-rows-per-table 1000 --sum-column Amount
 ```
 
-The TrustServerCertificate setting is a **temporary diagnostic exception** for this approved test database only. Use certificate verification for real customer assessments.
-
-To render the existing offline report:
+Repeat with an independently collected target snapshot and its own explicit expected database. Then compare:
 
 ```bat
-python -m migrationproof.report_cli report.json --output report.html
-start report.html
+python -m migrationproof.cli source_lab.json target_lab.json --output lab_report.json
+python -m migrationproof.report_cli lab_report.json --output lab_report.html
 ```
 
-Never commit connection strings, credentials, or customer snapshots. For customer use, implement strict allowlists, scoped accounts, certificate validation, query cost bounds, and integration tests first.
+The compare CLI intentionally returns exit code 1 when differences are found. A zero exit means only that the **implemented checks over supplied evidence** matched, not that migration was independently verified.
+
+## Remaining release blockers
+
+Real SQL Server integration tests on an approved disposable instance; permissions-visibility tests; consistent snapshot isolation strategy; performance measurement; discovery completeness; typed numerical comparison; row-level reconciliation; signed provenance; redaction and retention policies; documented operator approval and customer boundaries.

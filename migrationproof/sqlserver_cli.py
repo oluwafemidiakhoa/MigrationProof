@@ -1,16 +1,21 @@
-"""Collect a snapshot with credentials supplied only through an environment variable."""
+"""Collect only approved non-production SQL Server tables with bounded reads."""
 import argparse
 import os
 from pathlib import Path
 from .sqlserver import collect_snapshot
 
-def main():
-    parser = argparse.ArgumentParser()
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Bounded experimental SQL Server collector")
     parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--expected-database", required=True)
+    parser.add_argument("--table", action="append", required=True,
+                        help="Exact schema.table name to collect; repeatable")
     parser.add_argument("--timeout", type=int, default=15)
-    parser.add_argument("--max-tables", type=int, default=100)
+    parser.add_argument("--max-tables", type=int, default=10)
+    parser.add_argument("--max-rows-per-table", type=int, default=10000)
     parser.add_argument("--sum-column", action="append", default=[],
-                        help="Numeric column to sum in every collected table; repeatable")
+                        help="Numeric column to sum in each collected table; repeatable")
     args = parser.parse_args()
     conn = os.environ.get("MIGRATIONPROOF_CONNECTION_STRING")
     if not conn:
@@ -18,12 +23,17 @@ def main():
     if args.output.exists():
         parser.error("Output already exists; refusing overwrite")
     snapshot = collect_snapshot(
-        conn, timeout=args.timeout, max_tables=args.max_tables,
-        sum_columns=tuple(args.sum_column)
+        conn, expected_database=args.expected_database,
+        tables_allowlist=tuple(args.table),
+        timeout=args.timeout,
+        max_tables=args.max_tables,
+        max_rows_per_table=args.max_rows_per_table,
+        sum_columns=tuple(args.sum_column),
     )
     args.output.write_text(snapshot.model_dump_json(indent=2) + "\n", encoding="utf-8")
-    print(f"Saved {len(snapshot.tables)} tables to {args.output}")
+    print(f"Saved {len(snapshot.tables)} explicitly scoped tables to {args.output}")
     return 0
+
 
 if __name__ == "__main__":
     raise SystemExit(main())
