@@ -71,6 +71,7 @@ def collect_snapshot(
     max_rows_per_table: int = 10000,
     sum_columns: tuple[str, ...] = (),
     expected_columns: dict[str, tuple[str, ...]] | None = None,
+    snapshot_isolation: bool = False,
 ) -> DatabaseSnapshot:
     """Collect bounded exact counts and opt-in sums only for named tables.
 
@@ -78,6 +79,8 @@ def collect_snapshot(
     enforce a row limit aborts the entire collection.
     Do not use on production. Source/target point-in-time consistency is unproven.
     """
+    if type(snapshot_isolation) is not bool:
+        raise ValueError("snapshot_isolation must be a boolean")
     if not 1 <= timeout <= 60 or not 1 <= max_tables <= 100 or not 1 <= max_rows_per_table <= 100000:
         raise ValueError("Collection limits outside approved bounds")
     if not expected_database or expected_database.lower() in SYSTEM_DATABASES:
@@ -104,61 +107,91 @@ def collect_snapshot(
     with closing(pyodbc.connect(connection_string, timeout=timeout, autocommit=True, readonly=True)) as conn:
         conn.timeout = timeout
         cur = conn.cursor()
-        cur.execute("SELECT DB_NAME()")
-        observed_db = str(cur.fetchone()[0])
-        if observed_db != expected_database:
-            raise ValueError("Connected database does not match approved expected_database")
-        cur.execute("""SELECT s.name, t.name, c.name, ty.name, c.max_length, c.precision, c.scale, c.is_nullable
-            FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id
-            JOIN sys.columns c ON c.object_id=t.object_id
-            JOIN sys.types ty ON ty.user_type_id=c.user_type_id
-            WHERE t.is_ms_shipped=0 ORDER BY s.name,t.name,c.column_id""")
-        metadata: dict[tuple[str, str], dict[str, str]] = {}
-        for schema, table, column, typ, length, precision, scale, nullable in cur:
-            full_name = f"{schema}.{table}"
-            if full_name in requested_names:
-                metadata.setdefault((schema, table), {})[column] = (
-                    f"{typ}({length},{precision},{scale}) NULL={bool(nullable)}"
-                )
-        observed_names = {f"{schema}.{table}" for schema, table in metadata}
-        if observed_names != requested_names:
-            raise ValueError("One or more expected tables are not visible; collection incomplete")
-        for (schema, table), columns in metadata.items():
-            full_name = f"{schema}.{table}"
-            if set(columns) != set(expected_columns[full_name]):
-                raise ValueError("Column inventory mismatch; collection incomplete")
-        tables: dict[str, TableSnapshot] = {}
-        for (schema, table), columns in sorted(metadata.items()):
-            selected = select_sum_columns(columns, sum_columns)
-            qualified = f"{quote_identifier(schema)}.{quote_identifier(table)}"
-            # Count and all optional sums are computed from ONE bounded input.
-            # If TOP(N+1) sees the overflow row, no aggregate result is trusted.
-            # This avoids a separate, potentially unbounded SUM scan.
-            bound = max_rows_per_table + 1
-            projected = ", ".join(quote_identifier(name) for name in selected)
-            if not projected:
-                projected = "1 AS [_marker]"
-            expressions = ["COUNT_BIG(*)"] + [
-                f"SUM({quote_identifier(name)})" for name in selected
-            ]
-            query = (
-                f"SELECT {', '.join(expressions)} FROM "
-                f"(SELECT TOP ({bound}) {projected} FROM {qualified}) AS bounded"
+        if snapshot_isolation:
+            # Preflight verifies the database is already configured by an
+            # authorized DBA. Collector never changes database settings.
+            cur.execute(
+                "SELECT snapshot_isolation_state FROM sys.databases "
+                "WHERE database_id = DB_ID()"
             )
-            cur.execute(query)
-            result = cur.fetchone()
-            if result is None:
-                raise ValueError("Aggregate query returned no result; collection incomplete")
-            count = int(result[0])
-            if count > max_rows_per_table:
-                raise ValueError("Row budget exceeded; collection incomplete")
-            aggregates = {}
-            for index, column in enumerate(selected, start=1):
-                value = result[index]
-                aggregates[f"sum:{column}"] = (
-                    str(value) if isinstance(value, Decimal) else value
-                )
-            tables[f"{schema}.{table}"] = TableSnapshot(
-                columns=columns, row_count=count, aggregates=aggregates
+            row = cur.fetchone()
+            if row is None or int(row[0]) != 1:
+                raise ValueError("SNAPSHOT isolation is not enabled in this database")
+            # Explicit transaction works even with the pyodbc connection's
+            # autocommit=True; it must be rolled back on every exit path.
+            cur.execute("SET TRANSACTION ISOLATION LEVEL SNAPSHOT")
+            cur.execute("BEGIN TRANSACTION")
+        try:
+            return _read_allowed_tables(
+                cur, expected_database, requested_names, expected_columns,
+                max_rows_per_table, sum_columns
             )
-        return DatabaseSnapshot(database=observed_db, tables=tables)
+        finally:
+            if snapshot_isolation:
+                cur.execute("IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION")
+
+
+def _read_allowed_tables(
+    cur, expected_database: str, requested_names: set[str],
+    expected_columns: dict[str, tuple[str, ...]],
+    max_rows_per_table: int, sum_columns: tuple[str, ...],
+) -> DatabaseSnapshot:
+    """All metadata and data reads execute inside the same opted-in transaction."""
+    cur.execute("SELECT DB_NAME()")
+    observed_db = str(cur.fetchone()[0])
+    if observed_db != expected_database:
+        raise ValueError("Connected database does not match approved expected_database")
+    cur.execute("""SELECT s.name, t.name, c.name, ty.name, c.max_length, c.precision, c.scale, c.is_nullable
+        FROM sys.tables t JOIN sys.schemas s ON s.schema_id=t.schema_id
+        JOIN sys.columns c ON c.object_id=t.object_id
+        JOIN sys.types ty ON ty.user_type_id=c.user_type_id
+        WHERE t.is_ms_shipped=0 ORDER BY s.name,t.name,c.column_id""")
+    metadata: dict[tuple[str, str], dict[str, str]] = {}
+    for schema, table, column, typ, length, precision, scale, nullable in cur:
+        full_name = f"{schema}.{table}"
+        if full_name in requested_names:
+            metadata.setdefault((schema, table), {})[column] = (
+                f"{typ}({length},{precision},{scale}) NULL={bool(nullable)}"
+            )
+    observed_names = {f"{schema}.{table}" for schema, table in metadata}
+    if observed_names != requested_names:
+        raise ValueError("One or more expected tables are not visible; collection incomplete")
+    for (schema, table), columns in metadata.items():
+        full_name = f"{schema}.{table}"
+        if set(columns) != set(expected_columns[full_name]):
+            raise ValueError("Column inventory mismatch; collection incomplete")
+    tables: dict[str, TableSnapshot] = {}
+    for (schema, table), columns in sorted(metadata.items()):
+        selected = select_sum_columns(columns, sum_columns)
+        qualified = f"{quote_identifier(schema)}.{quote_identifier(table)}"
+        # Count and all optional sums are computed from ONE bounded input.
+        # If TOP(N+1) sees the overflow row, no aggregate result is trusted.
+        # This avoids a separate, potentially unbounded SUM scan.
+        bound = max_rows_per_table + 1
+        projected = ", ".join(quote_identifier(name) for name in selected)
+        if not projected:
+            projected = "1 AS [_marker]"
+        expressions = ["COUNT_BIG(*)"] + [
+            f"SUM({quote_identifier(name)})" for name in selected
+        ]
+        query = (
+            f"SELECT {', '.join(expressions)} FROM "
+            f"(SELECT TOP ({bound}) {projected} FROM {qualified}) AS bounded"
+        )
+        cur.execute(query)
+        result = cur.fetchone()
+        if result is None:
+            raise ValueError("Aggregate query returned no result; collection incomplete")
+        count = int(result[0])
+        if count > max_rows_per_table:
+            raise ValueError("Row budget exceeded; collection incomplete")
+        aggregates = {}
+        for index, column in enumerate(selected, start=1):
+            value = result[index]
+            aggregates[f"sum:{column}"] = (
+                str(value) if isinstance(value, Decimal) else value
+            )
+        tables[f"{schema}.{table}"] = TableSnapshot(
+            columns=columns, row_count=count, aggregates=aggregates
+        )
+    return DatabaseSnapshot(database=observed_db, tables=tables)
