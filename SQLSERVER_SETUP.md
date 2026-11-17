@@ -1,6 +1,6 @@
 # MigrationProof SQL Server collector — experimental scoped lab use
 
-This collector is **not approved for production or unrestricted customer databases**. It connects only to the explicitly named database and explicitly listed tables, and it refuses any table containing more than the configured row budget. The collector does not perform DML or DDL, but reads can still consume resources or take locks. It does **not** prove a transactionally consistent snapshot or complete migration equivalence.
+This collector is **not approved for production or unrestricted customer databases**. It connects only to the explicitly named database and explicitly listed tables, and it refuses any table containing more than the configured row budget. The collector does not perform DML or DDL, but reads can still consume resources or take locks. Count and optional sums are computed from the same TOP(N+1)-bounded derived table, avoiding a second unbounded SUM query. It does **not** prove a transactionally consistent snapshot or complete migration equivalence.
 
 ## Required checks
 
@@ -9,7 +9,7 @@ This collector is **not approved for production or unrestricted customer databas
 - Supply `--expected-database`, one or more `--table schema.table` values and an independently reviewed `--expected-columns` JSON inventory. Missing/hidden/extra columns in an allowed table are errors, not success. Inventory must NOT be generated using the same low-permission collector.
 - Set a conservative `--max-rows-per-table` (default 10000) and `--timeout` (default 15 seconds). Table counts are bounded by an N+1 TOP subquery; opt-in SUM applies only after counts pass.
 - Treat result as **scope-limited**, not a guarantee that there are no invisible tables or rows excluded by row-level security.
-- `SUM` can be expensive even on allowed tables, may overflow, and is inappropriate as sole evidence of row equivalence.
+- Bounded `SUM` can still require work on up to N+1 visible rows, may overflow, and is inappropriate as sole evidence of row equivalence. Query optimizer access patterns, lock behavior and timeout enforcement still require real SQL Server observation.
 - Report completeness must be independently reviewed. Snapshot collection timestamps, isolation levels, source/target coherence, and signed evidence are future gates.
 - Never commit captured database metadata or customer evidence to the repository.
 
