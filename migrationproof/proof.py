@@ -14,7 +14,7 @@ from .rows import RowEvidenceError, reconcile_rows
 
 FORMAT = "migrationproof.scoped-proof.v1"
 COVERAGE = "INCOMPLETE"
-EXPECTED_FILES = ("source_rows.json", "target_rows.json", "comparison.json")
+EXPECTED_FILES = ("comparison.json", "source_rows.json", "target_rows.json")
 
 
 class ProofError(ValueError):
