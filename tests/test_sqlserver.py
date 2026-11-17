@@ -1,4 +1,6 @@
 import pytest
+import sys
+from types import SimpleNamespace
 from migrationproof.sqlserver import (
     quote_identifier, collect_snapshot, select_sum_columns,
     validate_connection_security,
@@ -80,3 +82,77 @@ def test_equal_row_count_changed_sum_is_detected():
     report = reconcile(source, target)
     assert report["status"] == "DIFFERENCES_FOUND"
     assert [f["code"] for f in report["findings"]] == ["AGGREGATE_MISMATCH"]
+
+
+class FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+        self.executed = []
+
+    def execute(self, sql):
+        self.executed.append(sql)
+        if sql.startswith("SELECT DB_NAME()"):
+            self.data = [("MigrationProofSourceLab",)]
+        elif "FROM sys.tables" in sql:
+            self.data = self._rows
+        else:
+            raise AssertionError("No table data queries should run before column inventory is verified")
+        return self
+
+    def fetchone(self):
+        return self.data[0]
+
+    def __iter__(self):
+        return iter(self.data)
+
+
+class FakeConnection:
+    def __init__(self, rows):
+        self.cur = FakeCursor(rows)
+    def cursor(self):
+        return self.cur
+    def close(self):
+        pass
+
+
+def test_missing_visible_column_fails_before_any_table_scan(monkeypatch):
+    rows = [("dbo", "Orders", "OrderID", "int", 4, 10, 0, False)]
+    conn = FakeConnection(rows)
+    monkeypatch.setitem(sys.modules, "pyodbc", SimpleNamespace(connect=lambda *a, **k: conn))
+    with pytest.raises(ValueError, match="Column inventory mismatch"):
+        collect_snapshot(
+            secure_conn(),
+            expected_database="MigrationProofSourceLab",
+            tables_allowlist=("dbo.Orders",),
+            expected_columns={"dbo.Orders": ["OrderID", "Amount"]},
+        )
+    assert len(conn.cur.executed) == 2
+
+
+def test_unexpected_visible_column_fails_before_any_table_scan(monkeypatch):
+    rows = [
+        ("dbo", "Orders", "OrderID", "int", 4, 10, 0, False),
+        ("dbo", "Orders", "Extra", "int", 4, 10, 0, True),
+    ]
+    conn = FakeConnection(rows)
+    monkeypatch.setitem(sys.modules, "pyodbc", SimpleNamespace(connect=lambda *a, **k: conn))
+    with pytest.raises(ValueError, match="Column inventory mismatch"):
+        collect_snapshot(
+            secure_conn(),
+            expected_database="MigrationProofSourceLab",
+            tables_allowlist=("dbo.Orders",),
+            expected_columns={"dbo.Orders": ["OrderID"]},
+        )
+    assert len(conn.cur.executed) == 2
+
+
+def test_missing_inventory_rejected_before_connect(monkeypatch):
+    monkeypatch.setitem(sys.modules, "pyodbc", SimpleNamespace(
+        connect=lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not connect"))
+    ))
+    with pytest.raises(ValueError, match="expected-column inventory"):
+        collect_snapshot(
+            secure_conn(),
+            expected_database="MigrationProofSourceLab",
+            tables_allowlist=("dbo.Orders",),
+        )
