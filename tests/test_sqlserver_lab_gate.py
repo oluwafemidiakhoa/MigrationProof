@@ -67,6 +67,8 @@ def test_expected_difference_detected_from_synthetic_snapshots():
     assert all(c["max_rows_per_table"] == 10 for c in calls)
     assert all(c["timeout"] == 10 for c in calls)
     assert all(c["expected_columns"] == EXPECTED_COLUMNS for c in calls)
+    assert all(c["expected_instance"] == "LAB-SQL" for c in calls)
+    assert all(c["require_encrypted_session"] is True for c in calls)
 
 
 def test_unexpected_fixture_aborts():

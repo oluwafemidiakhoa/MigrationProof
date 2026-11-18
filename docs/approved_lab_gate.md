@@ -36,3 +36,9 @@ Expected synthetic source: row count 3; `sum:Amount=150.00`. Expected target: ro
 After the test, a qualified operator must independently verify: actual SQL Server identity, TLS certificate chain, login least privileges and object visibility, RLS absence/visibility, query resource use and query timeout, column inventory source, snapshot transaction semantics, and evidence provenance. This test **does not** demonstrate production safety or source-target point-in-time consistency.
 
 Never claim that an operator-supplied approval string or output receipt independently establishes permission; they are procedural assertions requiring separate approval evidence.
+
+## Runtime SQL identity and encryption checks
+
+The lab gate now requires `SERVERPROPERTY('ServerName')` to match `MIGRATIONPROOF_APPROVED_LAB_SERVER` *exactly*, and reads `sys.dm_exec_connections.encrypt_option` for its session. The approved value therefore must be the SQL Server instance name reported by `SERVERPROPERTY('ServerName')`, not an unverified DNS alias; if the ODBC endpoint uses an alias, the operator must verify that it resolves only to the authorized isolated instance. When the DMV is inaccessible to the least-privileged test account, the gate fails closed and the permission model requires review. Do not grant excessive privileges merely to make the test pass.
+
+`encrypt_option=TRUE` reports encrypted transport but does NOT independently prove the server certificate-chain or trust anchor is valid. ODBC Driver 18 certificate validation must still be tested and reviewed on the live lab host. These checks do not establish that the host was authorized or that another similarly named host is isolated. No real SQL Server test has been run by this change.

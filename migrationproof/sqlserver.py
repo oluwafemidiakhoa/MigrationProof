@@ -72,6 +72,8 @@ def collect_snapshot(
     sum_columns: tuple[str, ...] = (),
     expected_columns: dict[str, tuple[str, ...]] | None = None,
     snapshot_isolation: bool = False,
+    expected_instance: str | None = None,
+    require_encrypted_session: bool = False,
 ) -> DatabaseSnapshot:
     """Collect bounded exact counts and opt-in sums only for named tables.
 
@@ -79,6 +81,10 @@ def collect_snapshot(
     enforce a row limit aborts the entire collection.
     Do not use on production. Source/target point-in-time consistency is unproven.
     """
+    if type(require_encrypted_session) is not bool:
+        raise ValueError("require_encrypted_session must be boolean")
+    if expected_instance is not None and (not isinstance(expected_instance, str) or not expected_instance or len(expected_instance) > 256):
+        raise ValueError("Invalid expected SQL Server instance identity")
     if type(snapshot_isolation) is not bool:
         raise ValueError("snapshot_isolation must be a boolean")
     if not 1 <= timeout <= 60 or not 1 <= max_tables <= 100 or not 1 <= max_rows_per_table <= 100000:
@@ -107,6 +113,23 @@ def collect_snapshot(
     with closing(pyodbc.connect(connection_string, timeout=timeout, autocommit=True, readonly=True)) as conn:
         conn.timeout = timeout
         cur = conn.cursor()
+        # Runtime checks are opt-in for disposable lab verification. These
+        # compare observations made by the SQL Server, not only ODBC strings.
+        if expected_instance is not None:
+            cur.execute("SELECT CONVERT(nvarchar(256), SERVERPROPERTY('ServerName'))")
+            instance_row = cur.fetchone()
+            if (instance_row is None or instance_row[0] is None
+                    or str(instance_row[0]) != expected_instance):
+                raise ValueError("Connected SQL Server instance identity mismatch")
+        if require_encrypted_session:
+            cur.execute(
+                "SELECT encrypt_option FROM sys.dm_exec_connections "
+                "WHERE session_id = @@SPID"
+            )
+            tls_row = cur.fetchone()
+            if (tls_row is None or tls_row[0] is None
+                    or str(tls_row[0]).upper() != "TRUE"):
+                raise ValueError("SQL Server did not confirm session encryption")
         if snapshot_isolation:
             # Preflight verifies the database is already configured by an
             # authorized DBA. Collector never changes database settings.
