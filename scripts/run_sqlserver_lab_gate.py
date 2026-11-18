@@ -136,8 +136,7 @@ def main() -> int:
             raise ValueError("Lab receipt destination is required")
         with Path(output).open("x", encoding="utf-8") as handle:
             json.dump(report, handle, sort_keys=True, indent=2)
-            handle.write("
-")
+            handle.write("\n")
         print("PASS: bounded synthetic lab scans detected the expected discrepancy")
         return 0
     except Exception:
