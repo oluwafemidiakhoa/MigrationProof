@@ -88,7 +88,9 @@ def run_lab_gate(source_conn: str, target_conn: str, *, approved_server: str,
                   tables_allowlist=("dbo.Orders",),
                   expected_columns=EXPECTED_COLUMNS,
                   max_tables=1, max_rows_per_table=10, timeout=10,
-                  sum_columns=("Amount",),\n                  expected_instance=approved_server,\n                  require_encrypted_session=True)
+                  sum_columns=("Amount",),
+                  expected_instance=approved_server,
+                  require_encrypted_session=True)
         for conn, db in zip((source_conn, target_conn), DATABASES)
     ]
     for db, snap, expected_sum in zip(DATABASES, snapshots, EXPECTED_SUMS):
@@ -134,7 +136,8 @@ def main() -> int:
             raise ValueError("Lab receipt destination is required")
         with Path(output).open("x", encoding="utf-8") as handle:
             json.dump(report, handle, sort_keys=True, indent=2)
-            handle.write("\n")
+            handle.write("
+")
         print("PASS: bounded synthetic lab scans detected the expected discrepancy")
         return 0
     except Exception:
